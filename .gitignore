@@ -1,0 +1,12 @@
+.DS_Store
+.venv/
+**/.venv/
+**/.yolo-config/
+__pycache__/
+*.py[cod]
+*.pt
+.env
+.env.*
+installation_check/
+iphone_camera/output/
+*.log
