@@ -1,4 +1,4 @@
-"""Independent iPhone Continuity Camera preview and local YOLO detection on Mac."""
+"""iPhone YOLO detections and live centered image-plane pixel coordinates."""
 
 import argparse
 from contextlib import redirect_stdout
@@ -12,7 +12,7 @@ import threading
 import time
 
 from mac_cameras import MacCameras, select_iphone
-from scene_description import DEFAULT_SCENE_MODEL, OllamaCaptioner, SceneController, SceneWorker
+from frame_coordinates import annotate_frame, coordinate_system, detection_items
 
 HERE = Path(__file__).resolve().parent
 PROJECT = HERE.parent
@@ -145,17 +145,15 @@ def load_model(args):
 
 def detect_frame(model, device, frame, confidence, annotate):
     if model is None:
-        return frame, None
+        return annotate_frame(frame, []) if annotate else frame, None
     with redirect_stdout(sys.stderr):
         result = model.predict(frame, device=device, conf=confidence, imgsz=640, verbose=False)[0]
-    detections = [
-        {"class": result.names[int(box.cls.item())], "confidence": round(float(box.conf.item()), 3),
-         "xyxy": box.xyxy[0].tolist()} for box in result.boxes
-    ]
-    return result.plot() if annotate else frame, detections
+    height, width = frame.shape[:2]
+    detections = detection_items(result, width, height)
+    return annotate_frame(frame, detections) if annotate else frame, detections
 
 
-def describe_image(args, captioner, panel):
+def process_image(args, panel):
     """Explicit still-image verification, without opening any camera."""
     import cv2
     frame = cv2.imread(str(Path(args.image).expanduser()))
@@ -163,23 +161,17 @@ def describe_image(args, captioner, panel):
         raise RuntimeError(f"无法读取图片：{args.image}")
     height, width = frame.shape[:2]
     model, device = (None, None) if args.preview else load_model(args)
-    rendered, detections = detect_frame(model, device, frame, args.confidence, True)
-    scene = None
-    if captioner is not None:
-        started = time.monotonic()
-        text = captioner.describe(frame)
-        scene = {"state": "ready", "text": text, "error": "", "generation": 1,
-                 "stable_for": args.stable_seconds, "required_seconds": args.stable_seconds,
-                 "elapsed": round(time.monotonic() - started, 2)}
-        if panel is not None:
-            rendered = panel.render(rendered, scene, model=args.scene_model)
+    _, detections = detect_frame(model, device, frame, args.confidence, False)
+    rendered = panel.render(frame, detections) if panel is not None else None
     if args.output:
         destination = Path(args.output).expanduser()
         destination.parent.mkdir(parents=True, exist_ok=True)
         if not cv2.imwrite(str(destination), rendered):
             raise RuntimeError(f"无法保存预览：{destination}")
     print(json.dumps({"source": "image", "width": width, "height": height,
-                      "detections": detections, "scene": scene}, ensure_ascii=False), flush=True)
+                      "image_size": {"width": width, "height": height},
+                      "coordinate_system": coordinate_system(width, height),
+                      "detections": detections}, ensure_ascii=False), flush=True)
     if not args.headless:
         cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
         cv2.imshow(WINDOW, rendered)
@@ -191,8 +183,8 @@ def describe_image(args, captioner, panel):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="iPhone YOLO 和本地中文空间描述；画面稳定 2 秒后分析。")
-    parser.add_argument("--version", action="version", version="iPhone Camera V1.1.0")
+    parser = argparse.ArgumentParser(description="iPhone YOLO 实时物体坐标；画面中心为原点，X 向右、Y 向上，单位像素。")
+    parser.add_argument("--version", action="version", version="iPhone Camera V1.2.0")
     parser.add_argument("--list", action="store_true", help="列出设备和权限状态，不启动摄像头")
     parser.add_argument("--camera", help="指定 iPhone 的名称、名称片段或完整 unique_id")
     parser.add_argument("--preview", action="store_true", help="只预览，不加载 YOLO")
@@ -202,26 +194,16 @@ def main(argv=None):
     parser.add_argument("--headless", action="store_true", help="不显示窗口，每帧输出 JSON")
     parser.add_argument("--frames", type=int, default=0, help="处理指定帧数后退出；0 表示持续运行")
     parser.add_argument("--timeout", type=float, default=12, help="等待新画面的最长秒数")
-    parser.add_argument("--no-scene", action="store_true", help="仅运行 V1.0 的 YOLO 检测功能")
-    parser.add_argument("--scene-model", default=DEFAULT_SCENE_MODEL, help="Ollama 已安装的本地视觉模型")
-    parser.add_argument("--stable-seconds", type=float, default=2.0, help="画面保持稳定的秒数，默认 2")
-    parser.add_argument("--motion-threshold", type=float, default=0.025,
-                        help="发生明显像素变化的面积比例阈值，默认 0.025；越小越敏感")
-    parser.add_argument("--check-scene", action="store_true", help="检查本地视觉模型，不打开相机")
+    # Existing launch commands may include this flag. V1.2 always uses YOLO only.
+    parser.add_argument("--no-scene", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--font", help="用于中文侧栏的字体文件")
     parser.add_argument("--image", help="分析本地静态图片，不打开相机（用于验证）")
     parser.add_argument("--output", help="仅用于 --image：保存画面和文字侧栏的预览图片")
     args = parser.parse_args(argv)
     if not 0 <= args.confidence <= 1 or args.frames < 0 or not math.isfinite(args.timeout) or args.timeout <= 0:
         parser.error("confidence 必须在 0 到 1 之间，frames 必须大于等于 0，timeout 必须为有限正数。")
-    if not math.isfinite(args.stable_seconds) or args.stable_seconds <= 0 or not 0 < args.motion_threshold < 1:
-        parser.error("stable-seconds 必须为有限正数，motion-threshold 必须在 0 到 1 之间。")
     if args.output and not args.image:
         parser.error("--output 仅用于 --image 静态图片验证。")
-    if args.check_scene:
-        print(json.dumps(OllamaCaptioner(args.scene_model).check(), ensure_ascii=False, indent=2))
-        return 0
-
     if args.list:
         system = MacCameras()
         cameras = system.list()
@@ -231,32 +213,24 @@ def main(argv=None):
             "cameras": [{**asdict(camera), "is_iphone": camera.is_iphone} for camera in cameras],
         }, ensure_ascii=False, indent=2))
         return 0
-    captioner = panel = None
-    if not args.no_scene and not args.preview:
-        captioner = OllamaCaptioner(args.scene_model)
-        captioner.check()
-        if not args.headless or args.output:
-            from scene_panel import ScenePanel
-            panel = ScenePanel(args.font)
+    panel = None
+    if not args.headless or args.output:
+        from scene_panel import ScenePanel
+        panel = ScenePanel(args.font)
     if args.image:
-        return describe_image(args, captioner, panel)
+        return process_image(args, panel)
     system = MacCameras()
     cameras = system.list()
     camera = select_iphone(cameras, args.camera)
     import cv2
     capture = open_capture(cv2, camera, system)
     reader = CameraFrames(capture, args.timeout)
-    sequence = count = 0
+    sequence = count = page = 0
     started = False
-    worker = controller = None
     try:
         reader.start()
         started = True
         model, device = (None, None) if args.preview else load_model(args)
-        if captioner is not None:
-            worker = SceneWorker(captioner)
-            controller = SceneController(worker, args.stable_seconds, args.motion_threshold)
-            reader.observer = controller.update
         print(f"连接：{camera.name}；模式：{'仅预览' if model is None else 'YOLO / ' + device}",
               file=sys.stderr, flush=True)
         print("按 Q、Esc 或 Ctrl+C 退出。", file=sys.stderr, flush=True)
@@ -268,27 +242,25 @@ def main(argv=None):
         while True:
             sequence, frame = reader.get(sequence)
             height, width = frame.shape[:2]
-            frame, detections = detect_frame(model, device, frame, args.confidence, not args.headless)
+            _, detections = detect_frame(model, device, frame, args.confidence, False)
             count += 1
             if args.headless:
                 row = {"frame": count, "source_sequence": sequence, "width": width,
-                       "height": height, "detections": detections}
-                if controller is not None:
-                    row["scene"] = controller.as_dict()
+                       "height": height, "image_size": {"width": width, "height": height},
+                       "coordinate_system": coordinate_system(width, height), "detections": detections}
                 print(json.dumps(row, ensure_ascii=False), flush=True)
             else:
                 now = time.monotonic()
                 fps = 1 / max(now - displayed_at, 0.001)
                 displayed_at = now
-                if panel is not None:
-                    frame = panel.render(frame, controller.as_dict(), fps, args.scene_model)
-                else:
-                    cv2.putText(frame, f"iPhone | {fps:.1f} FPS | Q: quit", (12, 24),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                cv2.imshow(WINDOW, frame)
+                pages = max(1, (len(detections or []) + panel.PAGE_SIZE - 1) // panel.PAGE_SIZE)
+                page = min(page, pages - 1)
+                cv2.imshow(WINDOW, panel.render(frame, detections, fps, page))
                 key = cv2.waitKey(1) & 0xFF
-                if key in (ord("r"), ord("R")) and controller is not None:
-                    controller.retry()
+                if key in (ord("n"), ord("N")):
+                    page = min(page + 1, pages - 1)
+                elif key in (ord("p"), ord("P")):
+                    page = max(0, page - 1)
                 if key in (ord("q"), ord("Q"), 27) or cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
                     break
             if args.frames and count >= args.frames:
@@ -299,8 +271,6 @@ def main(argv=None):
             reader.close()
         else:
             capture.release()
-        if worker is not None:
-            worker.close()
         if not args.headless:
             cv2.destroyAllWindows()
     return 0

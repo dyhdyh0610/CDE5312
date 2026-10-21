@@ -1,5 +1,44 @@
 # Handoff
 
+## iPhone Coordinate Checkpoint — 2026-10-21
+
+V1.2 changes the iPhone default path to live YOLO object coordinates. The user
+explicitly selected existing detection boxes with realtime updates, rather than
+open-vocabulary visual-language localization. Coordinates use native-frame box
+centers: X=(x1+x2)/2-W/2, Y=H/2-(y1+y2)/2, +X right, +Y up, one decimal pixel.
+The overlay and Chinese coordinate table use the same current detections; window
+scaling does not change values. N/P pages crowded tables. No Ollama calls,
+stability delay, photo storage or per-frame disk logging are used by the app.
+The earlier scene/stability module and pending handheld-tolerance edits remain
+available outside the default path; the README preserves the earlier notes.
+
+Verification in the working tree: 52 tests pass, including the existing pending
+stability tests and new center/quadrant/odd-resolution/scaling/label-placement/
+pagination/live-changing-coordinate checks. An isolated export of exactly the
+staged release passes 38 tests; the additional 14 pending stability checks remain
+local and unstaged. Real local YOLO identifies 5 objects and outputs verified
+native coordinates on the existing bus sample. A 30-sample warmed MPS benchmark
+of YOLO plus the full coordinate panel averages 18.1 ms/frame (55.3 fps excluding
+camera acquisition and display), with panel rendering averaging 5.0 ms. The
+reviewed preview is ignored at iphone_camera/output/iphone_coordinates_preview.jpg.
+
+Actual connected iPhone and authorized camera were verified. An 80-frame 1920x1080
+headless run on MPS averaged 30.0 output fps (33.3 ms), with first output after
+2.72 seconds including startup. The real GUI opened successfully; its 120-frame
+measurement averaged 30.0 display fps with 3.8 ms panel rendering. These camera
+measurements contained zero detected objects, so they verify live acquisition
+and the empty-scene display path; live object localization in a populated scene
+has not been measured. Object recognition and moving coordinate values are
+covered by real-image inference and controlled frame-sequence tests respectively.
+The runtime window was left open for the user; Q/Esc closes it.
+
+Run: iphone_camera/启动iPhone识别.command. Tests: .venv/bin/python -m unittest
+discover -s iphone_camera -v. Headless JSON includes image_size, coordinate_system
+and detections with id/class/confidence/xyxy/position. IDs identify boxes within
+each frame, not persistent object identities. The retired scene-model/stability
+CLI options belong to V1.1 and are no longer used in V1.2; --no-scene remains
+accepted for compatibility. Sony application files are unchanged by this task.
+
 ## Sony Coordinate Checkpoint — 2026-10-21
 
 Sony Wi-Fi preview now draws centered Cartesian axes and a 100 px grid.

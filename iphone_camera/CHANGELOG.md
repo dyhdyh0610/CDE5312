@@ -1,5 +1,16 @@
 # Changelog
 
+## V1.2 — 2026-10-21
+
+- Replace relative scene prose with per-frame absolute image coordinates for
+  existing YOLO detection boxes, following the user's selected realtime scope.
+- Center the image-plane axes at (0, 0), with +X right and +Y up in native pixels.
+- Show object centers, signed coordinates and grid/axes beside a Chinese table;
+  keep coordinates independent of display scaling and support crowded tables.
+- Remove Ollama and the 2-second stability gate from the default camera path.
+  Keep earlier scene/stability modules for historical work, outside this path.
+- Add frame-level coordinate metadata and per-object id/position to JSON output.
+
 ## V1.1 — 2026-10-14
 
 - Add Chinese scene descriptions beside the live YOLO video.

@@ -9,6 +9,9 @@ the root are a separate application; do not change them for iPhone features.
 - Sony object positions use bounding-box centers in native-frame pixels, with
   the frame center as `(0, 0)`, positive X right, and positive Y up.
 - Run iPhone tests: `.venv/bin/python -m unittest discover -s iphone_camera -v`.
+- iPhone V1.2 reports current YOLO box centers in native-frame pixels: origin
+  at the image center, +X right, +Y up. Display resizing must not change values.
+- iPhone coordinate mode updates each inference without Ollama or stability waits.
 - Enumerate cameras without opening them: `cd iphone_camera && ../.venv/bin/python iphone_yolo.py --list`.
 - Never substitute a built-in camera when the selected iPhone disappears.
 - Keep camera frames and image descriptions local. Do not commit photos,

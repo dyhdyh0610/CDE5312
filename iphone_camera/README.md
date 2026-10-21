@@ -1,3 +1,61 @@
+# iPhone 实时物体坐标 · V1.2
+
+链路：iPhone 连续互通相机 → 本地 YOLO 检测 → 检测框中心坐标 → 视频和坐标表逐帧更新。
+新版只列出当前 YOLO 检测框内的物体，不再生成前后、远近等相对位置描述。
+坐标直接由同一帧的检测框计算，不等待画面稳定 2 秒，也不调用 Ollama。
+旧版场景描述和手持稳定调试代码仍保留，但不参与当前识别链路。
+
+## 坐标约定
+
+- 以原始取景画面的中心为 `(0, 0)`，X 向右为正、Y 向上为正。
+- 单位为原始画面的像素 `px`，物体位置取检测框中心，保留一位小数。
+- 视频窗口缩放、黑边、右侧文字面板和窗口位置都不会改变坐标。
+- 原图为 `W × H`、检测框为 `[x1, y1, x2, y2]` 时：
+  `X = (x1 + x2) / 2 - W / 2`，`Y = H / 2 - (y1 + y2) / 2`。
+- 例如在 1920 × 1080 画面中，中心为 `(1060, 590)` 的物体显示为 `(+100.0, -50.0)`。
+- 画面叠加网格、X/Y 轴、原点、检测框及中心十字；右侧表格列出同一帧的编号、物体、X 和 Y。
+- 编号仅对应当前帧，便于核对标记和表格，不表示跨帧身份跟踪。
+- 坐标是图像位置，不代表现实世界距离。识别范围取决于当前 YOLO 模型；没有检测框的物体不列入表格。
+
+## 启动与操作
+
+沿用原有 iPhone 连接和摄像头权限设置，复用上一级 `.venv` 和 `yolo26n.pt`。
+连接并信任 Mac，开启连续互通相机，固定并锁定手机，然后双击本目录的 `启动iPhone识别.command`。
+无需开启 Ollama，无需安装额外依赖。
+
+- Q / Esc：退出；Ctrl+C：从终端停止。
+- N / P：右侧表格下一页 / 上一页（每页 15 个，画面仍标记全部检测框）。
+- `--preview`：只预览坐标轴，不运行识别。
+- `--headless`：输出每帧 JSON，含 `image_size`、`coordinate_system` 以及物体的 `id/class/confidence/xyxy/position`。
+- 原有 `--no-scene` 参数仍可接受；新版默认就不调用场景描述模型。
+
+```bash
+cd "/path/to/CDE5312/iphone_camera"
+../.venv/bin/python iphone_yolo.py --list
+../.venv/bin/python iphone_yolo.py
+
+# 只验证视频和坐标轴
+../.venv/bin/python iphone_yolo.py --preview
+
+# 无窗口运行 80 帧；按需选择 CPU 或 MPS
+../.venv/bin/python iphone_yolo.py --headless --frames 80
+
+# 静态图片验证，不打开摄像头；只有显式 --output 才保存预览
+../.venv/bin/python iphone_yolo.py --image ../installation_check/bus.jpg --headless --output output/iphone_coordinates_preview.jpg
+```
+
+实时性来自单次 YOLO 推理后立即计算坐标，以及相机线程只保留最新帧，避免积压旧画面。
+正常相机模式不保存图像或录像，所有推理在电脑本地进行。
+
+## 测试和版本
+
+测试：`../.venv/bin/python -m unittest discover -s . -v`。
+当前版本见 `VERSION`，变更见 `CHANGELOG.md`，实机验证范围和性能记录见上级 `docs/HANDOFF.md`。
+V1.0 和 V1.1 标签保留旧版程序；切换版本前先保存工作区中的修改。
+
+<details>
+<summary>V1.1 场景描述与手持稳定调试记录（非当前运行模式）</summary>
+
 # iPhone 摄像头识别与画面描述 · V1.1
 
 链路：iPhone 后置相机 → macOS 连续互通相机 → 原始画面稳定检测 + YOLO → 左侧视频 / 右侧中文描述。
@@ -129,3 +187,5 @@ V1.1 开发分支为 `codex/iphone-scene-description`。模型、依赖环境和
 查看版本：`git -C .. log --oneline --decorate`。
 需要切换原版时，先保存当前修改，再在项目根目录运行 `git switch --detach V1.0`；
 返回新版运行 `git switch codex/iphone-scene-description`。原版也可从 V1.1 的 `--no-scene` 模式使用。
+
+</details>

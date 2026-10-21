@@ -234,16 +234,18 @@ class ProtocolTests(unittest.TestCase):
 
 
 class IntegrationTests(unittest.TestCase):
-    def test_missing_scene_service_fails_before_opening_camera(self):
-        backend = MagicMock()
-        backend.check.side_effect = RuntimeError("无法连接本机 Ollama")
-        with patch.object(iphone_yolo, "OllamaCaptioner", return_value=backend), \
-                patch.object(iphone_yolo, "MacCameras") as cameras, \
-                patch.object(cv2, "VideoCapture") as capture:
-            with self.assertRaisesRegex(RuntimeError, "Ollama"):
-                iphone_yolo.main(["--headless"])
-        cameras.assert_not_called()
-        capture.assert_not_called()
+    def test_coordinates_do_not_call_ollama_or_start_stability_worker(self):
+        capture = SimulatedCapture(frame())
+        with patch.object(iphone_yolo, "MacCameras", return_value=authorized_system()), \
+                patch.object(cv2, "VideoCapture", return_value=capture), \
+                patch.object(iphone_yolo, "load_model", return_value=(None, None)), \
+                patch.object(scene_description, "SceneWorker") as scenes, \
+                patch("requests.sessions.Session.request") as request, \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(iphone_yolo.main(["--headless", "--frames", "1"]), 0)
+        scenes.assert_not_called()
+        request.assert_not_called()
+        self.assertTrue(capture.released.is_set())
 
     def test_real_camera_reader_keeps_observing_while_ui_is_busy(self):
         capture = SimulatedCapture(frame())
@@ -264,30 +266,26 @@ class IntegrationTests(unittest.TestCase):
             worker.close()
         self.assertTrue(capture.released.is_set())
 
-    def test_headless_cli_includes_scene_state_and_releases_camera(self):
+    def test_headless_cli_includes_coordinates_and_releases_camera(self):
         capture = SimulatedCapture(frame())
-        backend = MagicMock()
-        backend.describe.return_value = "近景左侧有纸盒。"
         output = io.StringIO()
         with patch.object(iphone_yolo, "MacCameras", return_value=authorized_system()), \
                 patch.object(cv2, "VideoCapture", return_value=capture), \
-                patch.object(iphone_yolo, "OllamaCaptioner", return_value=backend), \
                 patch.object(iphone_yolo, "load_model", return_value=(None, None)), \
                 redirect_stdout(output), redirect_stderr(io.StringIO()):
-            self.assertEqual(iphone_yolo.main(["--headless", "--frames", "35", "--stable-seconds", "0.15"]), 0)
+            self.assertEqual(iphone_yolo.main(["--headless", "--frames", "3"]), 0)
         rows = [json.loads(line) for line in output.getvalue().splitlines()]
-        self.assertTrue(any(row["scene"]["state"] == "ready" for row in rows))
+        self.assertEqual(len(rows), 3)
+        self.assertTrue(all(row["coordinate_system"]["origin"] == [128, 96] for row in rows))
+        self.assertTrue(all("scene" not in row for row in rows))
         self.assertTrue(capture.released.is_set())
 
     def test_still_image_verifies_side_panel_without_opening_camera(self):
-        backend = MagicMock()
-        backend.describe.return_value = "近景左侧有纸盒，右侧是电脑。"
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "source.jpg"
             destination = Path(temporary) / "panel.jpg"
             cv2.imwrite(str(source), frame(80))
             with patch.object(iphone_yolo, "MacCameras") as cameras, \
-                    patch.object(iphone_yolo, "OllamaCaptioner", return_value=backend), \
                     patch.object(iphone_yolo, "load_model", return_value=(None, None)), \
                     redirect_stdout(io.StringIO()):
                 self.assertEqual(iphone_yolo.main(["--image", str(source), "--headless",
@@ -299,13 +297,10 @@ class IntegrationTests(unittest.TestCase):
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             iphone_yolo.main(["--output", "/tmp/camera.jpg"])
 
-    def test_chinese_panel_can_render_waiting_streaming_and_error_states(self):
+    def test_chinese_coordinate_panel_renders_empty_and_preview_states(self):
         panel = ScenePanel()
-        for state, text in [("waiting", ""), ("describing", "纸盒右侧是电脑。"),
-                            ("ready", "中间两个人面前各有电脑。"), ("error", "")]:
-            scene = {"state": state, "text": text, "error": "连接失败",
-                     "required_seconds": 2, "stable_for": 1}
-            image = panel.render(frame(), scene, model="test")
+        for detections in (None, []):
+            image = panel.render(frame(), detections)
             self.assertEqual(image.shape, (760, 1280, 3))
             self.assertGreater(np.count_nonzero(image[:, 840:]), 0)
 
