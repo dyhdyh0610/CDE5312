@@ -5,6 +5,9 @@ This repository contains local camera applications on an Apple Silicon Mac.
 the root are a separate application; do not change them for iPhone features.
 
 - Reuse the root `.venv/bin/python` and local `yolo26n.pt`.
+- Sony tests: `.venv/bin/python -m unittest -v test_sony_wifi_yolo`.
+- Sony object positions use bounding-box centers in native-frame pixels, with
+  the frame center as `(0, 0)`, positive X right, and positive Y up.
 - Run iPhone tests: `.venv/bin/python -m unittest discover -s iphone_camera -v`.
 - Enumerate cameras without opening them: `cd iphone_camera && ../.venv/bin/python iphone_yolo.py --list`.
 - Never substitute a built-in camera when the selected iPhone disappears.

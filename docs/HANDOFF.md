@@ -1,5 +1,29 @@
 # Handoff
 
+## Sony Coordinate Checkpoint — 2026-10-21
+
+Sony Wi-Fi preview now draws centered Cartesian axes and a 100 px grid.
+Each detected object has a center cross and a label containing its class,
+confidence, and `(X, Y)` in original-frame pixels. X is positive to the right;
+Y is positive upward. Coordinates use the bounding-box center, are displayed
+to 0.1 px, and represent image locations rather than relative positions or
+world distances. Nearby coordinate labels are moved apart where space permits.
+
+`--headless` retains existing detection fields and adds `position: {x, y}`, plus
+frame-level `image_size` and `coordinate_system`. `--preview` shows axes without
+running YOLO. Use the existing root `启动相机识别.command` launcher after joining
+the Sony camera's DIRECT Wi-Fi. See `INSTALLATION.md` for coordinate semantics.
+
+Verification: 13 Sony tests pass, including center/quadrant/odd-resolution
+geometry, label placement, and loopback Sony API + framed JPEG + real local YOLO
+inference with coordinate output and shutdown. All 44 existing iPhone tests
+also pass. The annotated existing test image was visually inspected; its local
+preview is ignored under `installation_check/sony_coordinates_preview.jpg`.
+No physical camera was opened, and Sony Wi-Fi streaming, live window operation,
+and sustained performance still require a connected alpha6000 to verify.
+The pre-existing iPhone working-tree edits are outside this Sony checkpoint.
+Release tags V1.0 and V1.1 are preserved; version control remains local.
+
 ## Current Status
 
 2026-10-14: Original iPhone application preserved as tag V1.0, commit 8851d22
