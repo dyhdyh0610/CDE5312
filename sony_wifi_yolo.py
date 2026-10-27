@@ -297,6 +297,8 @@ def main(argv=None):
     parser.add_argument("--tree-confidence", type=float, default=0.20, help="树木检测阈值")
     parser.add_argument("--headless", action="store_true", help="不打开画面窗口")
     parser.add_argument("--frames", type=int, default=0, help="处理指定帧数后退出，0 表示持续运行")
+    parser.add_argument("--haptics-port", help="启用 ESP32 四向振动：指定 USB 串口或 auto")
+    parser.add_argument("--list-haptics-ports", action="store_true", help="只枚举串口，不打开相机或控制板")
     args = parser.parse_args(argv)
     if (not all(0 <= value <= 1 for value in (args.confidence, args.cup_confidence, args.tree_confidence))
             or args.frames < 0 or args.stable_seconds <= 0
@@ -306,6 +308,12 @@ def main(argv=None):
         parser.error("target-number 需要 --headless，并且编号大于等于 1。")
     if args.target_number is not None and (args.preview or args.discover or args.coordinates_only):
         parser.error("target-number 只能用于默认拍摄引导模式。")
+    if args.haptics_port and (args.preview or args.discover or args.coordinates_only or args.list_haptics_ports):
+        parser.error("振动引导只能用于默认的对象选择与实时引导模式。")
+    if args.list_haptics_ports:
+        from sony_haptics import list_ports
+        print(json.dumps(list_ports(), ensure_ascii=False, indent=2))
+        return 0
 
     model = None
     detector = controller = panel = None
@@ -343,10 +351,15 @@ def main(argv=None):
     print(f"连接：{name}；推理设备：{device if model or detector else '仅预览'}", flush=True)
     camera = SonyCamera(endpoint)
     reader = None
+    haptics = None
     sequence = count = 0
     last_display_time = None
     automatic_choice_used = False
     try:
+        if args.haptics_port:
+            from sony_haptics import SerialHaptics
+            haptics = SerialHaptics(args.haptics_port)
+            print(f"四向振动已连接：{haptics.device}；上/右/下/左 = TCA 0/4/2/3。", flush=True)
         reader = LatestFrame(camera.start())
         reader.thread.start()
         if controller is not None:
@@ -386,6 +399,8 @@ def main(argv=None):
                         raise RuntimeError("候选编号不存在；请先查看 headless 输出中的候选对象。")
                     automatic_choice_used = True
                 state = controller.snapshot(width, height)
+                if haptics is not None:
+                    state["haptics"] = haptics.update(state, width, height, controller.tolerance, observed_at=now)
                 detections = controller.display_items()
             if args.headless and (model is not None or detector is not None):
                 output = {
@@ -414,6 +429,8 @@ def main(argv=None):
                 if controller is not None:
                     if key in (ord("r"), ord("R")):
                         controller.reset()
+                        if haptics is not None:
+                            haptics.send_directions((False, False, False, False), force=True)
                         panel.page = 0
                         panel.pending_selection = None
                     elif key in (ord("n"), ord("N")):
@@ -429,6 +446,8 @@ def main(argv=None):
             if args.frames and count >= args.frames:
                 break
     finally:
+        if haptics is not None and not haptics.close():
+            print("未收到停止振动确认，请检查 ESP32 和模块供电。", file=sys.stderr)
         if reader is not None:
             reader.close()
         camera.close()

@@ -14,10 +14,10 @@ TARGET_NAMES = {"person": "人", "tree": "树", "cup": "水杯"}
 class StabilityGate:
     # Limits apply against the fixed start-of-window frame, not the previous
     # frame: handheld wobble can settle, but a slow pan still restarts the timer.
-    MAX_SHIFT_FRACTION = 0.025
-    MAX_MEAN_DIFFERENCE = 12.0
-    CHANGED_PIXEL_DIFFERENCE = 30
-    MAX_CHANGED_FRACTION = 0.12
+    MAX_SHIFT_FRACTION = 0.04
+    MAX_MEAN_DIFFERENCE = 16.0
+    CHANGED_PIXEL_DIFFERENCE = 36
+    MAX_CHANGED_FRACTION = 0.18
 
     def __init__(self, seconds=1.5):
         self.seconds = seconds
@@ -287,6 +287,8 @@ class GuidancePanel:
                   "empty": "② 未找到候选对象", "tracking": "④ 实时调整取景", "lost": "④ 请找回原目标"}
         draw.text((850, 36), titles[state["phase"]], font=self.title_font, fill="#7ee4c4")
         y = paragraph(state["message"], 87)
+        if state.get("haptics"):
+            y = paragraph(f"振动：{state['haptics']['text']}", y + 6, "#7ee4c4", self.small_font)
         if state["phase"] == "stabilizing":
             fraction = min(1, state["stable_seconds"] / state["required_seconds"])
             draw.rounded_rectangle((850, y + 12, 1230, y + 24), radius=5, fill="#34465e")

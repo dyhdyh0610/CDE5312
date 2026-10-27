@@ -12,6 +12,7 @@ import numpy as np
 import requests
 
 DEFAULT_SCENE_MODEL = "qwen3.5:9b"
+DEFAULT_MOTION_THRESHOLD = 0.08
 OLLAMA_URL = "http://127.0.0.1:11434"
 SYSTEM_PROMPT = (
     "你是相机画面的空间描述器。只报告可见物体及其空间关系。"
@@ -36,34 +37,111 @@ class Stability:
     stable_for: float
     ready: bool
     motion: float
+    reset_reason: str = ""
 
 
 class StabilityGate:
-    """Compare to a fixed scene anchor so slow motion cannot accumulate unnoticed."""
+    """Ignore bounded camera jitter while retaining a fixed anchor for real changes."""
 
-    def __init__(self, seconds=2.0, motion_threshold=0.025, max_gap=1.0):
+    def __init__(self, seconds=2.0, motion_threshold=DEFAULT_MOTION_THRESHOLD, max_gap=3.0,
+                 confirmation_seconds=0.8, shift_tolerance=0.08, rotation_tolerance=5.0):
         self.seconds = seconds
         self.motion_threshold = motion_threshold
         self.max_gap = max_gap
+        self.confirmation_seconds = confirmation_seconds
+        self.shift_tolerance = shift_tolerance
+        self.rotation_tolerance = rotation_tolerance
         self.anchor = None
         self.since = self.last_at = None
+        self.suspect_since = None
         self.generation = 0
+        self.reset_reason = ""
+        self.alignment_window = cv2.createHanningWindow((256, 192), cv2.CV_32F)
+
+    def _coarse_motion(self, gray):
+        # Blur/interpolation or failed alignment should not turn fine edges into a
+        # scene cut. A lower-detail comparison still detects major layout changes.
+        current = cv2.resize(gray, (32, 24), interpolation=cv2.INTER_AREA)
+        reference = cv2.resize(self.anchor, (32, 24), interpolation=cv2.INTER_AREA)
+        return float(np.mean(cv2.absdiff(current, reference) > 32))
+
+    def _motion(self, gray):
+        raw_motion = float(np.mean(cv2.absdiff(gray, self.anchor) > 24))
+        if raw_motion <= self.motion_threshold:
+            return raw_motion, False
+        if min(np.std(gray), np.std(self.anchor)) < 5:
+            return self._coarse_motion(gray), False
+        # A rigid transform can compensate hand tremor without stretching objects.
+        # Estimate against the original anchor, never the preceding frame: otherwise
+        # a slow pan could be absorbed indefinitely as a sequence of small shifts.
+        try:
+            initial = np.eye(2, 3, dtype=np.float32)
+            shift, response = cv2.phaseCorrelate(self.anchor.astype(np.float32), gray.astype(np.float32),
+                                                self.alignment_window)
+            if np.isfinite(response) and response > 0.15 and np.isfinite(shift).all():
+                initial[:, 2] = shift
+            correlation, warp = cv2.findTransformECC(
+                self.anchor, gray, initial, cv2.MOTION_EUCLIDEAN,
+                (cv2.TERM_CRITERIA_COUNT | cv2.TERM_CRITERIA_EPS, 40, 1e-4), None, 5,
+            )
+        except cv2.error:
+            return self._coarse_motion(gray), False
+        if not np.isfinite(correlation) or correlation < 0.70 or not np.isfinite(warp).all():
+            return self._coarse_motion(gray), False
+        height, width = gray.shape
+        center = np.array([width / 2, height / 2], dtype=np.float32)
+        displacement = warp[:, :2] @ center + warp[:, 2] - center
+        angle = abs(float(np.degrees(np.arctan2(warp[1, 0], warp[0, 0]))))
+        if (abs(displacement[0]) > width * self.shift_tolerance
+                or abs(displacement[1]) > height * self.shift_tolerance
+                or angle > self.rotation_tolerance):
+            return raw_motion, True
+        flags = cv2.WARP_INVERSE_MAP
+        aligned = cv2.warpAffine(gray, warp, (width, height), flags=cv2.INTER_LINEAR | flags)
+        valid = cv2.warpAffine(np.ones_like(gray), warp, (width, height),
+                               flags=cv2.INTER_NEAREST | flags)
+        # Exclude newly exposed borders and interpolation edges from pixel differences.
+        valid = cv2.erode(valid, np.ones((5, 5), dtype=np.uint8)).astype(bool)
+        residual = float(np.mean(cv2.absdiff(aligned, self.anchor)[valid] > 24))
+        return min(raw_motion, residual), False
 
     def update(self, frame, now=None):
         now = time.monotonic() if now is None else now
-        gray = cv2.cvtColor(cv2.resize(frame, (256, 192)), cv2.COLOR_BGR2GRAY)
+        gray = cv2.cvtColor(cv2.resize(frame, (256, 192), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
         gray = cv2.GaussianBlur(gray, (5, 5), 0)
-        difference = None if self.anchor is None else cv2.absdiff(gray, self.anchor)
-        motion = 0.0 if difference is None else float(np.mean(difference > 18))
-        gap = self.last_at is not None and (now - self.last_at > self.max_gap or now < self.last_at)
-        if self.anchor is None or gap or motion > self.motion_threshold:
+        interval = 0.0 if self.last_at is None else now - self.last_at
+        gap = interval > self.max_gap + 1e-9
+        reset = self.anchor is None or gap or interval < 0
+        reason = "initial" if self.anchor is None else "frame_gap" if gap else "clock"
+        if not reset and interval > 0.5 + 1e-9:
+            # Short frame stalls pause progress instead of erasing it. Time with
+            # no observations cannot count towards stability/change confirmation.
+            self.since += interval
+            if self.suspect_since is not None:
+                self.suspect_since += interval
+        motion = 0.0
+        if not reset:
+            motion, large_camera_motion = self._motion(gray)
+            if large_camera_motion or motion > self.motion_threshold:
+                # All visual changes require confirmation, even a big single-frame
+                # blur/jerk. Keep progress and the previous report until confirmed.
+                if self.suspect_since is None:
+                    self.suspect_since = now
+                reset = now - self.suspect_since + 1e-9 >= self.confirmation_seconds
+                reason = "camera_motion" if large_camera_motion else "scene_change"
+            else:
+                self.suspect_since = None
+        if reset:
             self.anchor = gray
             self.since = now
+            self.suspect_since = None
             self.generation += 1
+            self.reset_reason = reason
         self.last_at = now
         elapsed = max(0.0, now - self.since)
         # Float subtraction can put an exact 2-second interval one ULP below 2.
-        return Stability(self.generation, elapsed, elapsed + 1e-9 >= self.seconds, motion)
+        ready = elapsed + 1e-9 >= self.seconds and self.suspect_since is None
+        return Stability(self.generation, elapsed, ready, motion, self.reset_reason)
 
 
 class Cancelled(Exception):
@@ -233,7 +311,7 @@ class SceneWorker:
 
 
 class SceneController:
-    def __init__(self, worker, seconds=2.0, motion_threshold=0.025):
+    def __init__(self, worker, seconds=2.0, motion_threshold=DEFAULT_MOTION_THRESHOLD):
         self.worker = worker
         self.gate = StabilityGate(seconds, motion_threshold)
         self.submitted_generation = None
@@ -260,4 +338,6 @@ class SceneController:
             report = self.worker.snapshot()
             return {"state": report.state, "text": report.text, "error": report.error,
                     "generation": report.generation, "stable_for": round(self.stability.stable_for, 2),
-                    "required_seconds": self.gate.seconds, "elapsed": round(report.elapsed, 2)}
+                    "required_seconds": self.gate.seconds, "elapsed": round(report.elapsed, 2),
+                    "motion": round(self.stability.motion, 4),
+                    "reset_reason": self.stability.reset_reason}

@@ -1,5 +1,31 @@
 # Handoff
 
+## GitHub Publication Preparation — 2026-10-27
+
+The user explicitly requested uploading the complete camera project to GitHub,
+including data sanitization, and selected account `dyhdyh0610`. The publication
+includes both camera applications, the pending iPhone stability changes, Sony
+handheld tuning, ESP32 haptics, firmware and tests. README.md supplies the project
+entry point and fresh-install instructions. Personal absolute paths in the
+current documentation have been replaced by `/path/to/CDE5312`; `.gitignore`
+also excludes media, secrets, model exports and generated packages.
+
+Verification: all 59 Sony/haptics tests and all 52 iPhone tests pass using the
+existing local environment, models and validation images. This includes virtual
+serial transport and the actual firmware sketch with C++ test stubs; it does
+not newly validate physical camera connections, board flashing or motors.
+Validation images/models remain local, so a fresh clone needs those resources
+for the full integration suite, as explained in README.md.
+
+Publication uses a separate sanitized Git repository under
+`.git/github-publish/`, leaving original local release tags and history intact.
+Its historical branches and V1.0/V1.1/V1.2 tags retain their code while personal
+paths in historical blobs are replaced; commit hashes therefore differ.
+GitHub `main` is the complete current checkpoint. Future uploads must use the
+sanitized publication repository and repeat the content/history audit; do not
+push the original unsanitized history directly. Older sections below are
+historical records and may describe superseded local-only or hardware status.
+
 ## Sony Cup/Tree Recall Fix — 2026-10-27
 
 The user reported missing cups and trees BEFORE choosing a subject. Reproduced

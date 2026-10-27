@@ -65,6 +65,25 @@ class StabilityTests(unittest.TestCase):
         self.assertEqual(controller.phase, "choose")
         self.assertEqual(len(controller.candidates), 1)
 
+    def test_wider_handheld_jitter_reaches_stability_and_keeps_choices(self):
+        for width, height in ((640, 480), (1280, 720)):
+            with self.subTest(size=(width, height)):
+                controller = GuidanceController()
+                generator = np.random.default_rng(27)
+                for step, (x, y) in enumerate(((0, 0), (0.035, 0.03), (-0.035, -0.03),
+                                             (0.03, -0.025), (-0.03, 0.025), (0.035, 0.03))):
+                    frame = self.handheld_frame(x * width, y * height, width=width, height=height)
+                    if step:
+                        noise = generator.integers(-3, 4, frame.shape, dtype=np.int16)
+                        frame = np.clip(frame.astype(np.int16) + noise + 4, 0, 255).astype(np.uint8)
+                    self.assertEqual(controller.observe(frame, step * 0.3), step == 5)
+                self.assertAlmostEqual(controller.gate.elapsed, 1.5)
+                controller.update_detections([item()])
+                controller.observe(self.handheld_frame(-0.03 * width, 0.025 * height,
+                                                       width=width, height=height), 1.6)
+                self.assertEqual(controller.phase, "choose")
+                self.assertEqual(len(controller.candidates), 1)
+
     def test_large_camera_movement_still_clears_object_choices(self):
         controller = GuidanceController()
         stabilize(controller, self.textured_frame)
@@ -379,7 +398,7 @@ class RealModelTests(unittest.TestCase):
             if expected == "tree":
                 self.assertTrue(all(first.names[int(box.cls.item())] in TREE_LABELS for box in first.boxes))
 
-    def run_liveview(self, images, frames=24, target_number=None):
+    def run_liveview(self, images, frames=24, target_number=None, extra_args=()):
         calls = []
 
         class CameraEmulator(BaseHTTPRequestHandler):
@@ -424,6 +443,7 @@ class RealModelTests(unittest.TestCase):
                         "--headless", "--frames", str(frames), "--device", "cpu"]
                 if target_number is not None:
                     args.extend(["--target-number", str(target_number)])
+                args.extend(extra_args)
                 status = main(args)
         finally:
             server.shutdown()

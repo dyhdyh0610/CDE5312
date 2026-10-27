@@ -25,6 +25,18 @@ def frame(value=0):
     return np.full((192, 256, 3), value, dtype=np.uint8)
 
 
+def textured_frame():
+    pixels = np.random.default_rng(42).integers(15, 240, (48, 64, 3), dtype=np.uint8)
+    return cv2.resize(pixels, (768, 576), interpolation=cv2.INTER_NEAREST)
+
+
+def jittered_frame(image, dx=0, dy=0, angle=0):
+    height, width = image.shape[:2]
+    transform = cv2.getRotationMatrix2D((width / 2, height / 2), angle, 1)
+    transform[:, 2] += (dx, dy)
+    return cv2.warpAffine(image, transform, (width, height), borderMode=cv2.BORDER_REFLECT_101)
+
+
 def wait_until(predicate, timeout=2):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -47,17 +59,22 @@ class StabilityTests(unittest.TestCase):
             before = gate.update(frame(), now)
         changed = gate.update(frame(100), 2.1)
         self.assertFalse(changed.ready)
-        self.assertGreater(changed.generation, before.generation)
-        for now in [2.6, 3.1, 3.6, 4.09]:
+        self.assertEqual(changed.generation, before.generation)
+        for now in [2.5, 2.89]:
             self.assertFalse(gate.update(frame(100), now).ready)
-        self.assertTrue(gate.update(frame(100), 4.1).ready)
+        changed = gate.update(frame(100), 2.9)
+        self.assertGreater(changed.generation, before.generation)
+        self.assertEqual(changed.reset_reason, "scene_change")
+        for now in [3.4, 3.9, 4.4, 4.89]:
+            self.assertFalse(gate.update(frame(100), now).ready)
+        self.assertTrue(gate.update(frame(100), 4.9).ready)
 
-    def test_small_camera_noise_is_tolerated_but_slow_drift_is_not(self):
+    def test_small_camera_noise_and_exposure_drift_are_tolerated(self):
         gate = StabilityGate()
         gate.update(frame(40), 0)
         for index in range(1, 6):
             state = gate.update(frame(40 + index * 5), index * 0.25)
-        self.assertGreater(state.generation, 1)
+        self.assertEqual(state.generation, 1)
         self.assertFalse(state.ready)
         gate = StabilityGate()
         for index in range(9):
@@ -67,16 +84,186 @@ class StabilityTests(unittest.TestCase):
     def test_unobserved_gap_does_not_count_as_stability(self):
         gate = StabilityGate()
         gate.update(frame(), 0)
-        state = gate.update(frame(), 3)
+        state = gate.update(frame(), 4)
         self.assertFalse(state.ready)
         self.assertEqual(state.stable_for, 0)
 
-    def test_local_object_change_resets_stability(self):
+    def test_sustained_large_local_object_change_resets_stability(self):
         gate = StabilityGate()
         gate.update(frame(), 0)
         changed = frame()
-        changed[50:100, 80:140] = 200
-        self.assertGreater(gate.update(changed, 0.5).generation, 1)
+        changed[50:125, 60:160] = 200
+        for now in [0.5, 0.9]:
+            self.assertEqual(gate.update(changed, now).generation, 1)
+        self.assertGreater(gate.update(changed, 1.3).generation, 1)
+
+
+class JitterToleranceTests(unittest.TestCase):
+    def test_micro_translation_rotation_and_sensor_noise_keep_two_second_window(self):
+        image = textured_frame()
+        random = np.random.default_rng(123)
+        gate = StabilityGate()
+        for index in range(21):
+            moved = jittered_frame(image, 5 * np.sin(index * 1.7), 4 * np.sin(index * 0.9),
+                                   0.6 * np.sin(index * 1.1))
+            noise = random.normal(0, 1.5, moved.shape)
+            moved = np.clip(moved.astype(np.float32) + noise, 0, 255).astype(np.uint8)
+            state = gate.update(moved, index * 0.1)
+            self.assertEqual(state.generation, 1, f"Minor jitter reset at frame {index}")
+        self.assertTrue(state.ready)
+        self.assertAlmostEqual(state.stable_for, 2)
+
+    def test_continued_jitter_submits_once_and_preserves_description_generation(self):
+        image = textured_frame()
+        worker = MagicMock()
+        controller = SceneController(worker)
+        for index in range(41):
+            moved = jittered_frame(image, 5 * np.sin(index), 4 * np.sin(index * 0.7),
+                                   0.5 * np.sin(index * 0.8))
+            controller.update(moved, index * 0.1)
+        self.assertEqual(worker.submit.call_count, 1)
+        self.assertEqual({call.args[0] for call in worker.invalidate.call_args_list}, {1})
+
+    def test_slow_pan_still_resets_against_fixed_anchor(self):
+        image = textured_frame()
+        gate = StabilityGate()
+        for index in range(21):
+            state = gate.update(jittered_frame(image, dx=index * 6), index * 0.1)
+        self.assertGreater(state.generation, 1)
+        self.assertFalse(state.ready)
+
+    def test_sustained_large_camera_translation_or_rotation_still_resets(self):
+        image = textured_frame()
+        for kwargs in [{"dx": 120}, {"angle": 12}]:
+            with self.subTest(**kwargs):
+                gate = StabilityGate()
+                for now in [0, 0.5, 1, 1.5, 2]:
+                    gate.update(image, now)
+                state = gate.update(jittered_frame(image, **kwargs), 2.1)
+                self.assertEqual(state.generation, 1)
+                for now in [2.5, 2.9]:
+                    state = gate.update(jittered_frame(image, **kwargs), now)
+                self.assertGreater(state.generation, 1)
+                self.assertFalse(state.ready)
+
+    def test_real_object_change_is_not_hidden_by_camera_compensation(self):
+        image = textured_frame()
+        gate = StabilityGate()
+        for now in [0, 0.5, 1, 1.5, 2]:
+            gate.update(image, now)
+        changed = image.copy()
+        changed[140:410, 180:490] = 0
+        state = gate.update(jittered_frame(changed, dx=4, dy=-3, angle=0.4), 2.1)
+        self.assertEqual(state.generation, 1)
+        for now in [2.5, 2.9]:
+            state = gate.update(jittered_frame(changed, dx=4, dy=-3, angle=0.4), now)
+        self.assertGreater(state.generation, 1)
+        self.assertFalse(state.ready)
+
+    def test_one_borderline_outlier_does_not_clear_countdown(self):
+        gate = StabilityGate()
+        for index in range(19):
+            gate.update(frame(), index * 0.1)
+        outlier = frame()
+        outlier[60:120, 80:160] = 200
+        suspect = gate.update(outlier, 1.9)
+        self.assertEqual(suspect.generation, 1)
+        self.assertFalse(suspect.ready)
+        restored = gate.update(frame(), 2)
+        self.assertEqual(restored.generation, 1)
+        self.assertTrue(restored.ready)
+
+    def test_persistent_borderline_content_change_still_resets(self):
+        gate = StabilityGate()
+        for index in range(18):
+            gate.update(frame(), index * 0.1)
+        changed = frame()
+        changed[60:120, 80:160] = 200
+        for now in [1.8, 1.9, 2.01, 2.5]:
+            state = gate.update(changed, now)
+            self.assertFalse(state.ready)
+            self.assertEqual(state.generation, 1)
+        state = gate.update(changed, 2.61)
+        self.assertGreater(state.generation, 1)
+        self.assertFalse(state.ready)
+
+
+class RelaxedStabilityTests(unittest.TestCase):
+    def test_wider_handheld_jitter_keeps_two_second_window(self):
+        image = textured_frame()
+        gate = StabilityGate()
+        for index in range(21):
+            moved = jittered_frame(image, 50 * np.sin(index * 0.8), 25 * np.sin(index * 0.9),
+                                   4 * np.sin(index * 0.6))
+            state = gate.update(moved, index * 0.1)
+            self.assertEqual(state.generation, 1, f"Handheld jitter reset at frame {index}")
+        self.assertTrue(state.ready)
+
+    def test_alignment_failure_does_not_turn_minor_jitter_into_scene_change(self):
+        image = textured_frame()
+        gate = StabilityGate()
+        with patch.object(cv2, "findTransformECC", side_effect=cv2.error("no convergence")):
+            for index in range(21):
+                moved = jittered_frame(image, 4 * np.sin(index), 3 * np.sin(index * 0.7),
+                                       0.8 * np.sin(index * 0.8))
+                state = gate.update(moved, index * 0.1)
+                self.assertEqual(state.generation, 1)
+        self.assertTrue(state.ready)
+
+    def test_short_observation_gap_pauses_and_preserves_progress(self):
+        gate = StabilityGate()
+        for now in [0, 0.4, 0.8]:
+            gate.update(frame(), now)
+        resumed = gate.update(frame(), 2.4)
+        self.assertEqual(resumed.generation, 1)
+        self.assertAlmostEqual(resumed.stable_for, 0.8)
+        self.assertFalse(resumed.ready)
+        for now in [2.8, 3.2, 3.6]:
+            resumed = gate.update(frame(), now)
+        self.assertTrue(resumed.ready)
+
+    def test_gap_longer_than_three_seconds_still_resets(self):
+        gate = StabilityGate()
+        gate.update(frame(), 0)
+        gate.update(frame(), 0.5)
+        resumed = gate.update(frame(), 3.6)
+        self.assertEqual(resumed.generation, 2)
+        self.assertEqual(resumed.stable_for, 0)
+
+    def test_single_large_visual_outlier_does_not_clear_countdown(self):
+        gate = StabilityGate()
+        for index in range(19):
+            gate.update(frame(), index * 0.1)
+        suspect = gate.update(frame(255), 1.9)
+        self.assertEqual(suspect.generation, 1)
+        self.assertFalse(suspect.ready)
+        restored = gate.update(frame(), 2)
+        self.assertEqual(restored.generation, 1)
+        self.assertTrue(restored.ready)
+
+    def test_small_exposure_and_local_pixel_changes_are_tolerated(self):
+        local = frame()
+        local[50:100, 80:140] = 200
+        for changed in [frame(20), local]:
+            with self.subTest(local_change=bool(changed[0, 0, 0] == 0)):
+                gate = StabilityGate()
+                gate.update(frame(), 0)
+                for index in range(1, 21):
+                    state = gate.update(changed, index * 0.1)
+                    self.assertEqual(state.generation, 1)
+                self.assertTrue(state.ready)
+
+    def test_even_large_change_requires_eight_hundred_ms_confirmation(self):
+        gate = StabilityGate()
+        for now in [0, 0.4, 0.8]:
+            gate.update(frame(), now)
+        for now in [1, 1.3, 1.7]:
+            state = gate.update(frame(100), now)
+            self.assertEqual(state.generation, 1)
+            self.assertFalse(state.ready)
+        confirmed = gate.update(frame(100), 1.8)
+        self.assertEqual(confirmed.generation, 2)
+        self.assertEqual(confirmed.stable_for, 0)
 
 
 class ControllerTests(unittest.TestCase):
@@ -91,8 +278,11 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(worker.submit.call_count, 1)
         first_generation = worker.submit.call_args.args[0]
         controller.update(frame(100), 2.6)
+        self.assertEqual(worker.invalidate.call_args.args[0], first_generation)
+        for now in [3, 3.4]:
+            controller.update(frame(100), now)
         self.assertGreater(worker.invalidate.call_args.args[0], first_generation)
-        for now in [3, 3.5, 4, 4.6, 4.7]:
+        for now in [3.9, 4.4, 4.9, 5.4]:
             controller.update(frame(100), now)
         self.assertEqual(worker.submit.call_count, 2)
 
