@@ -150,6 +150,7 @@ class SonyProtocolTests(unittest.TestCase):
                 status = main([
                     "--api-url", f"http://127.0.0.1:{server.server_port}/sony/camera",
                     "--headless", "--frames", "1", "--device", "cpu",
+                    "--coordinates-only",
                 ])
         finally:
             server.shutdown()

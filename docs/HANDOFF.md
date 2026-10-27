@@ -1,5 +1,62 @@
 # Handoff
 
+## Sony Shooting Guidance Checkpoint — 2026-10-27
+
+The Sony default path now waits for 1.5 continuous seconds of stable video,
+then inventories only people, trees, and cups. The user selects a particular
+numbered object by clicking its box or its Chinese side-panel row. N/P pages
+crowded lists; R clears selection and starts a new stable-scene scan. After
+selection, the app tracks immediately on each inference without another
+stability wait and gives Chinese pan/tilt instructions, native pixel offsets,
+distance to the frame center, and small/moderate/large adjustment hints.
+Centering uses 3% of frame width/height (minimum 8 px), with 1.3x exit hysteresis.
+The instructions say when the subject is centered; no shutter is triggered.
+
+`sony_guidance.py` owns the anchored stability gate, state machine, guidance,
+and Chinese mouse-selectable panel. `sony_targets.py` reuses root `yolo26n.pt`
+for person/cup and adds the local prompt-free `yoloe-26n-seg-pf.pt` for trees
+and a whitelist of natural tree types. Do not substitute potted plants, cat
+trees, shoe trees, or tree frogs. Tree subtype labels are normalized to `tree`
+with the original label retained in `source_class`. No text encoder or cloud
+inference is involved. The tree weights (~15.5 MB) and newly installed
+scipy 1.17.1 / lap 0.5.13 are local; model files stay ignored.
+
+BoT-SORT tracks camera motion. Both model trackers are initialized before any
+visible target IDs are assigned to avoid resetting the shared ID counter while
+another model has active tracks. Application selection stays bound to the
+same source-prefixed tracking ID. A missing target clears directions and shows
+a lost-target message; other detections do not substitute for it. Occlusion,
+fast movement, or crossing subjects can still confuse the underlying tracker.
+Before selection, visible scene changes invalidate candidates; initial model
+computation time alone does not discard an already stable choice frame.
+
+The existing launcher is unchanged. `--coordinates-only` retains the previous
+full-class coordinate mode; `--preview` retains a no-inference coordinate view.
+Default `--headless` JSON includes the `shooting` state and Chinese guidance;
+`--target-number N` is an explicit headless choice after the stable inventory.
+See INSTALLATION.md for dependency preparation, flags, and text semantics.
+
+Verification: 34 Sony tests pass (13 existing + 21 workflow tests), including
+exact timing, slow pan/noise/gap handling, same-class selection, lost-target
+behavior, directions, centering hysteresis, mouse hit regions, pagination,
+real person/tree/cup tracking, and local Sony API/JPEG stream -> selection ->
+real YOLO -> Chinese guidance -> clean shutdown. All 52 iPhone tests pass.
+A real OpenCV window using public test imagery ran for 26 frames, selected
+candidate #2 through the panel's mouse handler, and entered live guidance.
+Native external mouse delivery and physical Sony video remain unverified.
+The latest SSDP discovery on the current network returned no Sony cameras.
+
+The cached models also pass MPS inference: five-sample detector/tracker means
+were 39.7 ms for people, 145.9 ms for trees, and 33.4 ms for cups on the local
+test images; these figures exclude camera acquisition and UI rendering.
+Selection/guidance previews were visually inspected under ignored
+installation_check/sony_target_selection.jpg and sony_shooting_guidance.jpg.
+Additional tree/cup fixtures and source notes remain local in installation_check/.
+The tree fixture is a public forest photo; the cup fixture is COCO128 image
+000000000562.jpg. No camera frames, model weights, or generated output are committed.
+Pending iPhone working-tree changes remain outside this milestone. Release
+tags are preserved and this checkpoint is local only.
+
 ## iPhone Coordinate Checkpoint — 2026-10-21
 
 V1.2 changes the iPhone default path to live YOLO object coordinates. The user

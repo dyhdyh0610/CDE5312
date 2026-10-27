@@ -1,4 +1,4 @@
-# α6000 无线 YOLO：电脑端安装
+# α6000 无线拍摄引导：电脑端安装
 
 程序和依赖位于当前项目，不需要 Imaging Edge。Python 解释器使用 `.venv/bin/python`。
 
@@ -6,10 +6,41 @@
 
 1. 相机：关闭飞行模式，打开 MENU → 应用程序 → 应用程序列表 → 智能遥控 / Smart Remote Embedded。
 2. Mac：连接相机显示的 DIRECT-… Wi-Fi。macOS 若询问本地网络访问权限，请允许运行程序访问。
-3. 双击 `启动相机识别.command`。程序自动发现相机，并显示坐标轴、网格和带中心坐标的 YOLO 检测框。
-4. 按 Q、Esc 或 Ctrl+C 退出。退出时程序请求停止取景，并结束由本程序启动的遥控拍摄状态。
+3. 双击 `启动相机识别.command`。程序自动发现相机，显示取景画面、坐标轴和中文提示面板。
+4. 连续保持画面稳定 1.5 秒。程序只列出人、树、水杯；每个具体对象都有独立编号。
+5. 点击取景框中的对象或右侧条目，锁定想拍摄的对象。对象较多时用 N/P 翻页。
+6. 此后可以移动相机。程序持续跟踪已选择的对象，逐帧显示距中心的像素偏移和中文调整提示。
+7. 目标居中后显示“可以拍照”。程序不自动触发快门。按 R 清除选择，重新开始稳定计时。
+8. 按 Q、Esc 或 Ctrl+C 退出。退出时程序请求停止取景，并结束由本程序启动的遥控拍摄状态。
 
 相机热点通常不提供互联网；依赖与模型已经预先安装，识别不需要在线服务。
+
+## 三类目标与引导规则
+
+- 人、水杯使用现有 `yolo26n.pt` 的 `person` 和 `cup` 类，其他 COCO 类别不作为候选对象。
+- 树使用本地 `yoloe-26n-seg-pf.pt` 的树和真实树种类别，例如 `tree`、`oak tree`、`eucalyptus tree`。
+  这些结果统一显示为“树”，保留 `source_class` 供诊断；不把盆栽、猫爬架、鞋楦或树蛙当作树。
+- 稳定计时使用原始画面与固定参考帧的差异，容忍轻微图像噪声和曝光波动。
+  选择前画面发生明显变化会清除旧候选并重新计时；识别计算本身不重新触发等待。
+- 锁定后不再等待 1.5 秒，使用 BoT-SORT 的持续跟踪编号更新对象位置。
+  目标丢失时清除方向提示；只接受同一跟踪编号重新出现，或由用户按 R 重新选择。
+  遮挡、快速移动、同类目标交叉仍可能影响跟踪身份，不能保证物理身份永不混淆。
+- 对象在画面右侧时提示向右转动相机，在上方时提示向上抬起镜头，其余方向同理。
+  提示“小幅 / 适度 / 较大幅度”按偏移占整幅宽度或高度的比例分级，阈值分别为 10% 和 25%。
+  同时显示具体像素偏移与百分比，不推断未经标定的转动角度或现实距离。
+- 默认居中容差为宽、高各 3%，最低 8 像素；进入居中状态后使用 1.3 倍退出容差，减少文字抖动。
+  `--center-tolerance` 可调整比例，`--stable-seconds` 可调整首次选择前的稳定时长。
+
+新增跟踪依赖和树模型已在当前电脑准备。其他电脑应在连接相机 Wi-Fi 前完成：
+
+```bash
+cd "/path/to/CDE5312"
+./.venv/bin/python -m pip install scipy==1.17.1 lap==0.5.13
+./.venv/bin/python -c 'from ultralytics import YOLOE; YOLOE("yoloe-26n-seg-pf.pt")'
+```
+
+模型为 prompt-free 版本，取景时不需要文本编码器、Ollama 或外部服务。
+程序启动前检查本地模型和中文字体，缺少时明确报错，不在相机热点下自动下载。
 
 ## 取景框二维坐标
 
@@ -21,7 +52,12 @@ X 向右为正，Y 向上为正；每个物体的位置使用检测框中心，�
 公式为 `X = (x1 + x2) / 2 - 宽度 / 2`，`Y = 高度 / 2 - (y1 + y2) / 2`。
 计算使用原始帧大小，不使用模型内部的 640 像素推理输入大小，也不表示现实世界的距离或物体间关系。
 
-`--headless` 每帧输出 JSON，保留原来的 `class`、`confidence`、`xyxy`，新增每个检测的
+默认拍摄引导模式的 `--headless` 输出还包含 `shooting`：当前阶段、三类对象计数、候选对象、
+锁定编号、最新目标及中文提示。可用 `--target-number N` 明确预先选择稳定识别后的候选编号，
+供无窗口集成使用。等待阶段不运行用户画面的目标检测；空场景不会反复重扫，改变取景或按 R 可重试。
+
+`--coordinates-only` 保留旧版逐帧全类别坐标模式，不运行选择或引导流程。
+此模式的 `--headless` 每帧输出 JSON，保留原来的 `class`、`confidence`、`xyxy`，每个检测包含
 `position: {"x": 100.0, "y": 50.0}`，以及帧级 `image_size` 和 `coordinate_system`。
 其中 `coordinate_system.origin` 使用原图左上角为原点的像素坐标描述新原点的位置；
 `position` 则使用画面中心为原点的坐标。坐标显示精度为 0.1 像素，不代表识别精度。
@@ -48,13 +84,17 @@ cd "/path/to/CDE5312"
 ## 已安装组件及验证
 
 - YOLO 模型：项目根目录的 `yolo26n.pt`。
+- 树模型：项目根目录的 `yoloe-26n-seg-pf.pt`，只筛选真实树木类别。
 - 当前完整依赖版本：`requirements-installed.txt`。
 - 安装清单与版本：`installation_check/installation_report.json`。
 - 静态图片识别结果：`installation_check/detected_bus.jpg`。
 - 模型推理结果：`installation_check/model_check.json`。
 - Sony 协议测试：`test_sony_wifi_yolo.py`。
+- 拍摄流程、中文界面、真实三类模型和跟踪测试：`test_sony_guidance.py`。
 
-运行测试：`./.venv/bin/python -m unittest -v test_sony_wifi_yolo`。
+运行测试：`./.venv/bin/python -m unittest -v test_sony_wifi_yolo test_sony_guidance`。
+模型集成测试使用本机 `installation_check/` 中的 `bus.jpg`、`tree_sample.jpg`、`cup_sample.jpg`；
+它们是本地校验资源，不随代码提交。
 
 实机连接、相机内置遥控应用、实际预览分辨率和长期稳定性仍需在相机连接后验证。
 预训练模型检测 COCO 常见目标，不包含对整体景物的自然语言描述。
@@ -62,5 +102,6 @@ cd "/path/to/CDE5312"
 ## 参考
 
 - Ultralytics 官方安装与模型说明：https://docs.ultralytics.com/quickstart/
+- YOLOE 模型与内置类别说明：https://docs.ultralytics.com/models/yoloe/
 - α6000 Smart Remote 接口说明：https://github.com/micolous/gst-plugins-sonyalpha
 - Sony Liveview 帧结构：https://github.com/micolous/gst-plugins-sonyalpha/blob/master/FRAMING_FORMAT.md

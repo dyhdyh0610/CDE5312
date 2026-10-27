@@ -269,7 +269,8 @@ def annotate_frame(frame, detections):
         cv2.rectangle(output, (round(x1), round(y1)), (round(x2), round(y2)), color, 2)
         cv2.drawMarker(output, center, color, cv2.MARKER_CROSS, 12, 2)
         position = item["position"]
-        text = (f"{item['class']} {item['confidence']:.2f} "
+        number = f"#{item['number']} " if "number" in item else ""
+        text = (f"{number}{item['class']} {item['confidence']:.2f} "
                 f"({position['x']:+.1f}, {position['y']:+.1f}) px")
         labels.append((text, x1, y1 - 25, color))
     occupied = []
@@ -279,20 +280,32 @@ def annotate_frame(frame, detections):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="α6000 Wi-Fi YOLO 识别与取景框中心像素坐标；无需 Imaging Edge。")
+    parser = argparse.ArgumentParser(description="α6000：稳定 1.5 秒后选择人、树、水杯，并实时文字引导居中。")
     parser.add_argument("--discover", action="store_true", help="只列出相机，不启动取景")
     parser.add_argument("--api-url", help="手动指定相机 API 的完整 URL")
     parser.add_argument("--preview", action="store_true", help="只显示画面，不运行 YOLO")
     parser.add_argument("--model", default=str(ROOT / "yolo26n.pt"))
+    parser.add_argument("--tree-model", default=str(ROOT / "yoloe-26n-seg-pf.pt"))
+    parser.add_argument("--coordinates-only", action="store_true", help="使用原版逐帧全类别坐标模式")
+    parser.add_argument("--stable-seconds", type=float, default=1.5, help="选择对象前需要连续稳定的秒数")
+    parser.add_argument("--center-tolerance", type=float, default=0.03, help="居中容差占画面宽、高的比例")
+    parser.add_argument("--target-number", type=int, help="无窗口模式下，稳定识别后选择指定候选编号")
+    parser.add_argument("--font", help="中文提示使用的本地字体文件")
     parser.add_argument("--device", choices=["auto", "cpu", "mps"], default="auto")
     parser.add_argument("--confidence", type=float, default=0.35)
     parser.add_argument("--headless", action="store_true", help="不打开画面窗口")
     parser.add_argument("--frames", type=int, default=0, help="处理指定帧数后退出，0 表示持续运行")
     args = parser.parse_args(argv)
-    if not 0 <= args.confidence <= 1 or args.frames < 0:
-        parser.error("confidence 必须在 0 到 1 之间，frames 必须大于等于 0。")
+    if (not 0 <= args.confidence <= 1 or args.frames < 0 or args.stable_seconds <= 0
+            or not 0 < args.center_tolerance <= 0.25):
+        parser.error("confidence 必须在 0 到 1 之间，frames 非负，stable-seconds 为正，center-tolerance 在 0 到 0.25 之间。")
+    if args.target_number is not None and (not args.headless or args.target_number < 1):
+        parser.error("target-number 需要 --headless，并且编号大于等于 1。")
+    if args.target_number is not None and (args.preview or args.discover or args.coordinates_only):
+        parser.error("target-number 只能用于默认拍摄引导模式。")
 
     model = None
+    detector = controller = panel = None
     device = args.device
     if not args.discover and not args.preview:
         if not Path(args.model).is_file():
@@ -303,7 +316,15 @@ def main(argv=None):
             device = "mps" if torch.backends.mps.is_available() else "cpu"
         if device == "mps" and not torch.backends.mps.is_available():
             raise RuntimeError("当前环境无法使用 MPS，请使用 --device cpu。")
-        model = YOLO(args.model)
+        if args.coordinates_only:
+            model = YOLO(args.model)
+        else:
+            from sony_targets import TargetDetector
+            from sony_guidance import GuidanceController, GuidancePanel
+            detector = TargetDetector(args.model, args.tree_model, device, args.confidence)
+            controller = GuidanceController(args.stable_seconds, args.center_tolerance)
+            if not args.headless:
+                panel = GuidancePanel(args.font)
 
     cameras = [("Sony camera", args.api_url)] if args.api_url else discover()
     if args.discover:
@@ -315,37 +336,89 @@ def main(argv=None):
         raise RuntimeError("发现多台相机，请先用 --discover 查看，再用 --api-url 指定。")
 
     name, endpoint = cameras[0]
-    print(f"连接：{name}；推理设备：{device if model else '仅预览'}", flush=True)
+    print(f"连接：{name}；推理设备：{device if model or detector else '仅预览'}", flush=True)
     camera = SonyCamera(endpoint)
     reader = None
     sequence = count = 0
+    last_display_time = None
+    automatic_choice_used = False
     try:
         reader = LatestFrame(camera.start())
         reader.thread.start()
-        print("按 Q、Esc 或 Ctrl+C 退出。", flush=True)
+        if controller is not None:
+            print("画面稳定后点击对象锁定；R 重新选择；Q、Esc 或 Ctrl+C 退出。", flush=True)
+        else:
+            print("按 Q、Esc 或 Ctrl+C 退出。", flush=True)
+        if panel is not None:
+            cv2.namedWindow("Sony Wi-Fi YOLO", cv2.WINDOW_AUTOSIZE)
+            cv2.setMouseCallback("Sony Wi-Fi YOLO", panel.mouse)
         while True:
             sequence, frame = reader.get(sequence)
             height, width = frame.shape[:2]
             detections = []
+            state = None
+            now = time.monotonic()
             if model is not None:
                 result = model.predict(frame, device=device, conf=args.confidence, imgsz=640, verbose=False)[0]
                 detections = detection_items(result, width, height)
-                if args.headless:
-                    print(json.dumps({
-                        "frame": count + 1,
-                        "image_size": {"width": width, "height": height},
-                        "coordinate_system": {
-                            "unit": "pixel", "origin": [width / 2, height / 2],
-                            "x_positive": "right", "y_positive": "up",
-                            "position_reference": "bounding_box_center",
-                        },
-                        "detections": detections,
-                    }), flush=True)
+            elif detector is not None:
+                if controller.observe(frame, now):
+                    if controller.selected_id is None:
+                        detector.reset()
+                    items = []
+                    for source, result in detector.track(frame, controller.selected_class):
+                        for box, item in zip(result.boxes, detection_items(result, width, height)):
+                            if box.id is None:
+                                continue
+                            item["track_id"] = f"{source}:{int(box.id.item())}"
+                            if source == "tree":
+                                item["source_class"] = item["class"]
+                                item["class"] = "tree"
+                            items.append(item)
+                    controller.update_detections(items, completed_at=time.monotonic())
+                if (args.target_number is not None and not automatic_choice_used
+                        and controller.phase == "choose"):
+                    if not controller.select(args.target_number):
+                        raise RuntimeError("候选编号不存在；请先查看 headless 输出中的候选对象。")
+                    automatic_choice_used = True
+                state = controller.snapshot(width, height)
+                detections = controller.display_items()
+            if args.headless and (model is not None or detector is not None):
+                output = {
+                    "frame": count + 1,
+                    "image_size": {"width": width, "height": height},
+                    "coordinate_system": {
+                        "unit": "pixel", "origin": [width / 2, height / 2],
+                        "x_positive": "right", "y_positive": "up",
+                        "position_reference": "bounding_box_center",
+                    },
+                    "detections": detections,
+                }
+                if state is not None:
+                    output["shooting"] = state
+                print(json.dumps(output, ensure_ascii=False), flush=True)
             if not args.headless:
-                frame = annotate_frame(frame, detections)
-                cv2.imshow("Sony Wi-Fi YOLO", frame)
-                if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
+                view = annotate_frame(frame, detections)
+                if panel is not None:
+                    fps = 0 if last_display_time is None else 1 / max(now - last_display_time, 1e-6)
+                    view = panel.render(view, state, fps)
+                cv2.imshow("Sony Wi-Fi YOLO", view)
+                last_display_time = now
+                key = cv2.waitKey(1) & 0xFF
+                if key in (ord("q"), 27):
                     break
+                if controller is not None:
+                    if key in (ord("r"), ord("R")):
+                        controller.reset()
+                        panel.page = 0
+                        panel.pending_selection = None
+                    elif key in (ord("n"), ord("N")):
+                        panel.page += 1
+                    elif key in (ord("p"), ord("P")):
+                        panel.page = max(0, panel.page - 1)
+                    selection = panel.take_selection()
+                    if selection is not None:
+                        controller.select(selection)
                 if cv2.getWindowProperty("Sony Wi-Fi YOLO", cv2.WND_PROP_VISIBLE) < 1:
                     break
             count += 1
