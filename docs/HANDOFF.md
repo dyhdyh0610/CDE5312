@@ -1,5 +1,47 @@
 # Handoff
 
+## Sony Cup/Tree Recall Fix — 2026-10-27
+
+The user reported missing cups and trees BEFORE choosing a subject. Reproduced
+misses using mixed public-image JPEG previews: at 640x284/quality 90 the old
+0.35 threshold dropped a tree at 0.340; at 480x212/quality 40 it dropped a cup
+at 0.301. The old inventory also ran only once after stability, preserving any
+initial misses until a scene change or explicit reset.
+
+`sony_targets.py` now keeps person confidence at 0.35 and sets independent
+cup/tree defaults to 0.20. Both models' BoT-SORT high/new-track thresholds are
+bounded by the corresponding detection floor; otherwise its default 0.25
+new-track gate would still discard accepted weak objects. Per-category output
+filtering preserves the stronger person threshold. The existing prompt-free
+YOLOE also detects cup/coffee cup/paper cup/insulated cup/mug/teacup alongside
+natural trees. `target_class()` maps these to cup/tree; unrelated cup homonyms,
+bottles, and potted plants are excluded. No new weights or dependencies.
+
+`sony_wifi_yolo.py` adds --cup-confidence and --tree-confidence; --confidence
+still controls people in guidance and all classes in --coordinates-only.
+YOLOE IDs now have the `scene:` prefix and retain `source_class`. Do not relabel
+all scene-model results as trees. `sony_guidance.py` refreshes a stable inventory
+0.75 seconds after inference completion until selection, including empty
+scenes. Refreshes keep trackers and existing numbers; new stable windows/R
+reset them. Cross-model cup boxes with IoU >= 0.5 are merged, preferring the
+selected/already-numbered track. Missing selected cups do not switch models or
+identities. The 1.5-second timing, handheld tolerance, native coordinates, and
+immediate tracking after selection are retained. AGENTS.md/INSTALLATION.md
+document these rules.
+
+Verification: 48 Sony tests and all 52 iPhone tests pass. Added real compressed
+mixed-scene inference, actual 0.22-confidence tracker admission, cup-label
+normalization, duplicate/locked-cup handling, stable numbers, and local camera
+API/JPEG video -> incomplete inventory -> automatic complete inventory without
+restabilizing. CPU and MPS both detect people, trees, and cups in the repro
+previews; MPS results are 3 people / 1 tree / 1 cup for both sizes. The Chinese
+selection panel was rendered and visually inspected in ignored
+installation_check/sony_all_targets_fixed_preview.jpg. Test logs and local
+video-emulation JSON also remain ignored. No debug instrumentation was added.
+Physical Sony video remains unverified: SSDP discovery returned no cameras on
+the current network. Reopen the existing launcher to use the changes. Pending
+iPhone edits remain untouched and outside this local-only checkpoint.
+
 ## Sony Handheld Stability Checkpoint — 2026-10-27
 
 The Sony 1.5-second wait now tolerates small handheld camera wobble. Previously,

@@ -292,13 +292,16 @@ def main(argv=None):
     parser.add_argument("--target-number", type=int, help="无窗口模式下，稳定识别后选择指定候选编号")
     parser.add_argument("--font", help="中文提示使用的本地字体文件")
     parser.add_argument("--device", choices=["auto", "cpu", "mps"], default="auto")
-    parser.add_argument("--confidence", type=float, default=0.35)
+    parser.add_argument("--confidence", type=float, default=0.35, help="人或旧版全类别模式的检测阈值")
+    parser.add_argument("--cup-confidence", type=float, default=0.20, help="水杯检测阈值")
+    parser.add_argument("--tree-confidence", type=float, default=0.20, help="树木检测阈值")
     parser.add_argument("--headless", action="store_true", help="不打开画面窗口")
     parser.add_argument("--frames", type=int, default=0, help="处理指定帧数后退出，0 表示持续运行")
     args = parser.parse_args(argv)
-    if (not 0 <= args.confidence <= 1 or args.frames < 0 or args.stable_seconds <= 0
+    if (not all(0 <= value <= 1 for value in (args.confidence, args.cup_confidence, args.tree_confidence))
+            or args.frames < 0 or args.stable_seconds <= 0
             or not 0 < args.center_tolerance <= 0.25):
-        parser.error("confidence 必须在 0 到 1 之间，frames 非负，stable-seconds 为正，center-tolerance 在 0 到 0.25 之间。")
+        parser.error("检测阈值必须在 0 到 1 之间，frames 非负，stable-seconds 为正，center-tolerance 在 0 到 0.25 之间。")
     if args.target_number is not None and (not args.headless or args.target_number < 1):
         parser.error("target-number 需要 --headless，并且编号大于等于 1。")
     if args.target_number is not None and (args.preview or args.discover or args.coordinates_only):
@@ -319,9 +322,10 @@ def main(argv=None):
         if args.coordinates_only:
             model = YOLO(args.model)
         else:
-            from sony_targets import TargetDetector
+            from sony_targets import TargetDetector, target_class
             from sony_guidance import GuidanceController, GuidancePanel
-            detector = TargetDetector(args.model, args.tree_model, device, args.confidence)
+            detector = TargetDetector(args.model, args.tree_model, device, args.confidence,
+                                      args.cup_confidence, args.tree_confidence)
             controller = GuidanceController(args.stable_seconds, args.center_tolerance)
             if not args.headless:
                 panel = GuidancePanel(args.font)
@@ -363,7 +367,7 @@ def main(argv=None):
                 detections = detection_items(result, width, height)
             elif detector is not None:
                 if controller.observe(frame, now):
-                    if controller.selected_id is None:
+                    if controller.phase == "detecting":
                         detector.reset()
                     items = []
                     for source, result in detector.track(frame, controller.selected_class):
@@ -371,9 +375,9 @@ def main(argv=None):
                             if box.id is None:
                                 continue
                             item["track_id"] = f"{source}:{int(box.id.item())}"
-                            if source == "tree":
+                            if source == "scene":
                                 item["source_class"] = item["class"]
-                                item["class"] = "tree"
+                                item["class"] = target_class(item["class"])
                             items.append(item)
                     controller.update_detections(items, completed_at=time.monotonic())
                 if (args.target_number is not None and not automatic_choice_used

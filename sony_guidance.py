@@ -91,6 +91,8 @@ def movement_guidance(position, width, height, tolerance=0.03, was_centered=Fals
 
 
 class GuidanceController:
+    INVENTORY_INTERVAL = 0.75
+
     def __init__(self, stable_seconds=1.5, tolerance=0.03):
         self.gate = StabilityGate(stable_seconds)
         self.tolerance = tolerance
@@ -105,6 +107,9 @@ class GuidanceController:
         self.selected_class = None
         self.selected_number = None
         self.centered = False
+        self.last_scan_at = None
+        self.numbers = {}
+        self.next_number = 1
 
     def observe(self, frame, now):
         if self.selected_id is not None:
@@ -113,15 +118,44 @@ class GuidanceController:
         if not stable:
             self.phase = "stabilizing"
             self.candidates = []
+            self.last_scan_at = None
+            self.numbers = {}
+            self.next_number = 1
             return False
         if self.phase == "stabilizing":
             self.phase = "detecting"
             return True
-        return False
+        return (self.phase in ("choose", "empty") and self.last_scan_at is not None
+                and now - self.last_scan_at >= self.INVENTORY_INTERVAL)
+
+    def _distinct_items(self, items):
+        # The two models can detect the same cup. Prefer an already numbered
+        # track (especially the selected one) so refreshing cannot replace it.
+        items.sort(key=lambda item: (item["track_id"] != self.selected_id,
+                                     item["track_id"] not in self.numbers, -item["confidence"]))
+        distinct = []
+        for item in items:
+            duplicate = False
+            if item["class"] == "cup":
+                x1, y1, x2, y2 = item["xyxy"]
+                for other in distinct:
+                    if (other["class"] != "cup" or other["track_id"].partition(":")[0]
+                            == item["track_id"].partition(":")[0]):
+                        continue
+                    a1, b1, a2, b2 = other["xyxy"]
+                    intersection = max(0, min(x2, a2) - max(x1, a1)) * max(0, min(y2, b2) - max(y1, b1))
+                    union = (x2 - x1) * (y2 - y1) + (a2 - a1) * (b2 - b1) - intersection
+                    if union > 0 and intersection / union >= 0.5:
+                        duplicate = True
+                        break
+            if not duplicate:
+                distinct.append(item)
+        return distinct
 
     def update_detections(self, detections, completed_at=None):
         items = [dict(item) for item in detections
                  if item["class"] in TARGET_NAMES and item.get("track_id") is not None]
+        items = self._distinct_items(items)
         if self.selected_id is not None:
             self.target = next((item for item in items if item["track_id"] == self.selected_id
                                 and item["class"] == self.selected_class), None)
@@ -133,9 +167,15 @@ class GuidanceController:
             return
         order = {name: index for index, name in enumerate(TARGET_NAMES)}
         self.candidates = sorted(items, key=lambda item: (order[item["class"]], item["xyxy"][0]))
-        for number, item in enumerate(self.candidates, 1):
-            item["number"] = number
+        for item in self.candidates:
+            track_id = item["track_id"]
+            if track_id not in self.numbers:
+                self.numbers[track_id] = self.next_number
+                self.next_number += 1
+            item["number"] = self.numbers[track_id]
+        self.candidates.sort(key=lambda item: item["number"])
         self.phase = "choose" if self.candidates else "empty"
+        self.last_scan_at = self.gate.last_time if completed_at is None else completed_at
         if completed_at is not None:
             # The initial stable window is already satisfied. Model computation
             # is not a fresh stability window; the next image still has to match
@@ -163,7 +203,7 @@ class GuidanceController:
             "stabilizing": f"请保持画面稳定：{min(self.gate.elapsed, self.gate.seconds):.1f} / {self.gate.seconds:.1f} 秒",
             "detecting": "画面已稳定，正在识别人、树、水杯……",
             "choose": "请选择想拍摄的具体对象：点击画面中的框或右侧条目。",
-            "empty": "未检测到人、树或水杯。请调整取景，或按 R 重新识别。",
+            "empty": "暂未检测到人、树或水杯，保持取景会自动重试；也可调整取景或按 R。",
             "tracking": "已锁定目标，正在读取它的最新位置……",
             "lost": "已锁定目标暂时丢失。请让原目标回到画面，或按 R 重新选择。",
         }

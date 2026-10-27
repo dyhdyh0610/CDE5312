@@ -11,6 +11,8 @@ the root are a separate application; do not change them for iPhone features.
 - Sony guidance waits for 1.5 seconds of stable video before selection, then
   tracks the selected person/tree/cup without another stability wait. Tree
   detections use local YOLOE tree classes; do not relabel potted plants as trees.
+- Refresh the stable Sony candidate inventory before selection without resetting
+  trackers or renumbering existing tracks. Merge cross-model duplicate cup boxes.
 - Run iPhone tests: `.venv/bin/python -m unittest discover -s iphone_camera -v`.
 - iPhone V1.2 reports current YOLO box centers in native-frame pixels: origin
   at the image center, +X right, +Y up. Display resizing must not change values.
