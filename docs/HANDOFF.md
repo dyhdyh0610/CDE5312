@@ -1,6 +1,9 @@
 # Handoff
 
-## GitHub Publication Preparation — 2026-10-27
+## GitHub Publication — 2026-10-27
+
+Published to private repository https://github.com/dyhdyh0610/CDE5312.
+All five branches and the three release tags were uploaded successfully.
 
 The user explicitly requested uploading the complete camera project to GitHub,
 including data sanitization, and selected account `dyhdyh0610`. The publication
@@ -14,7 +17,9 @@ Verification: all 59 Sony/haptics tests and all 52 iPhone tests pass using the
 existing local environment, models and validation images. This includes virtual
 serial transport and the actual firmware sketch with C++ test stubs; it does
 not newly validate physical camera connections, board flashing or motors.
-Validation images/models remain local, so a fresh clone needs those resources
+The sanitized checkout also passes all 27 documented fixture-free Sony/haptics
+tests without local images or models. Validation images/models remain local,
+so a fresh clone needs those resources
 for the full integration suite, as explained in README.md.
 
 Publication uses a separate sanitized Git repository under
