@@ -1,5 +1,35 @@
 # Handoff
 
+## Sony Handheld Stability Checkpoint — 2026-10-27
+
+The Sony 1.5-second wait now tolerates small handheld camera wobble. Previously,
+the public bus fixture reset the countdown for just 6–7 native pixels of
+translation or 0.6 degrees of rotation. `sony_guidance.py` now estimates global
+translation with windowed phase correlation on the existing 160x96 thumbnail.
+Reliable estimates (response >= 0.5) may be compensated up to 2.5% of width and
+height from the fixed anchor (16x12 px at 640x480); larger motion resets the
+timer. Alignment excludes the exposed border and does not alter camera frames,
+model input, displayed images, or object coordinates. Unreliable/low-texture
+estimates fall back to unaligned image differences. Mean difference tolerance
+increases from 4 to 12, changed-pixel cutoff from 20 to 30, and allowed changed
+fraction from 4% to 12%; uniform exposure compensation remains capped at 6.
+The anchor stays fixed, so slow pans cannot accumulate tolerated frame-to-frame
+shifts. Scene changes, frame gaps, and explicit resets still restart the wait;
+selected targets continue live tracking without any stability wait.
+
+Verification: 38 Sony tests pass (13 protocol/coordinates + 25 guidance),
+including four new handheld/large-motion/slow-pan regressions. Translation
+tests cover 640x480 and 1280x720, with sensor noise and exposure changes;
+rotation tests preserve candidate selection through continued small wobble.
+All 52 iPhone tests pass. A separate 100-frame deterministic public-image
+simulation with +/-12 px horizontal, +/-8 px vertical, +/-0.8 degree rotation,
+noise and exposure changes produced zero countdown resets; mean stability
+check cost was 0.52 ms on this Mac. This is simulated jitter, not physical
+Sony handheld validation. Camera hardware/actual Wi-Fi video remain unverified.
+INSTALLATION.md documents the new defaults; restart the existing launcher to
+use them. Unrelated pending iPhone files remain unchanged and uncommitted.
+This checkpoint is local only; release tags remain preserved.
+
 ## Sony Shooting Guidance Checkpoint — 2026-10-27
 
 The Sony default path now waits for 1.5 continuous seconds of stable video,

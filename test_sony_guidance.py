@@ -30,6 +30,54 @@ def stabilize(controller, frame):
 class StabilityTests(unittest.TestCase):
     def setUp(self):
         self.frame = np.full((480, 640, 3), 100, dtype=np.uint8)
+        generator = np.random.default_rng(42)
+        texture = generator.integers(20, 230, (24, 32, 3), dtype=np.uint8)
+        self.textured_frame = cv2.resize(texture, (640, 480), interpolation=cv2.INTER_NEAREST)
+
+    def handheld_frame(self, dx=0, dy=0, angle=0, width=640, height=480):
+        frame = cv2.resize(self.textured_frame, (width, height))
+        transform = cv2.getRotationMatrix2D((width / 2, height / 2), angle, 1)
+        transform[:, 2] += (dx, dy)
+        return cv2.warpAffine(frame, transform, (width, height), borderMode=cv2.BORDER_REFLECT_101)
+
+    def test_handheld_translation_noise_and_exposure_do_not_restart_countdown(self):
+        for width, height in ((640, 480), (1280, 720)):
+            with self.subTest(size=(width, height)):
+                controller = GuidanceController()
+                generator = np.random.default_rng(17)
+                for step, (x, y) in enumerate(((0, 0), (0.02, 0.015), (-0.02, -0.015),
+                                             (0.015, -0.01), (-0.015, 0.01), (0.02, 0.015))):
+                    frame = self.handheld_frame(x * width, y * height, width=width, height=height)
+                    if step:
+                        noise = generator.integers(-2, 3, frame.shape, dtype=np.int16)
+                        frame = np.clip(frame.astype(np.int16) + noise + 3, 0, 255).astype(np.uint8)
+                    ready = controller.observe(frame, step * 0.3)
+                    self.assertEqual(ready, step == 5)
+                self.assertAlmostEqual(controller.gate.elapsed, 1.5)
+
+    def test_small_handheld_rotations_preserve_countdown_and_object_choices(self):
+        controller = GuidanceController()
+        for step, angle in enumerate((0, 0.6, -0.6, 0.4, -0.5, 0.5)):
+            ready = controller.observe(self.handheld_frame(angle=angle), step * 0.3)
+            self.assertEqual(ready, step == 5)
+        controller.update_detections([item()])
+        self.assertFalse(controller.observe(self.handheld_frame(dx=-9, dy=5, angle=-0.6), 1.6))
+        self.assertEqual(controller.phase, "choose")
+        self.assertEqual(len(controller.candidates), 1)
+
+    def test_large_camera_movement_still_clears_object_choices(self):
+        controller = GuidanceController()
+        stabilize(controller, self.textured_frame)
+        controller.update_detections([item()])
+        self.assertFalse(controller.observe(self.handheld_frame(dx=40, dy=25), 1.6))
+        self.assertEqual(controller.phase, "stabilizing")
+        self.assertEqual(controller.gate.elapsed, 0)
+        self.assertEqual(controller.candidates, [])
+
+    def test_slow_textured_camera_pan_is_compared_to_the_original_anchor(self):
+        gate = StabilityGate()
+        flags = [gate.observe(self.handheld_frame(dx=step * 2), step * 0.1) for step in range(24)]
+        self.assertFalse(any(flags))
 
     def test_exactly_one_point_five_seconds_before_first_detection(self):
         controller = GuidanceController()

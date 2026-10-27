@@ -12,8 +12,16 @@ TARGET_NAMES = {"person": "人", "tree": "树", "cup": "水杯"}
 
 
 class StabilityGate:
+    # Limits apply against the fixed start-of-window frame, not the previous
+    # frame: handheld wobble can settle, but a slow pan still restarts the timer.
+    MAX_SHIFT_FRACTION = 0.025
+    MAX_MEAN_DIFFERENCE = 12.0
+    CHANGED_PIXEL_DIFFERENCE = 30
+    MAX_CHANGED_FRACTION = 0.12
+
     def __init__(self, seconds=1.5):
         self.seconds = seconds
+        self.window = cv2.createHanningWindow((160, 96), cv2.CV_32F)
         self.reset()
 
     def reset(self):
@@ -22,16 +30,34 @@ class StabilityGate:
         self.last_time = None
         self.elapsed = 0.0
 
+    def _scene_changed(self, gray):
+        height, width = gray.shape
+        # phaseCorrelate applies its window in place; copies keep the reference
+        # intact throughout the countdown and while candidates are displayed.
+        (dx, dy), response = cv2.phaseCorrelate(self.anchor.copy(), gray.copy(), self.window)
+        reference = self.anchor
+        if response >= 0.5 and math.isfinite(dx) and math.isfinite(dy):
+            if abs(dx) > width * self.MAX_SHIFT_FRACTION or abs(dy) > height * self.MAX_SHIFT_FRACTION:
+                return True
+            gray = cv2.warpAffine(gray, np.float32([[1, 0, -dx], [0, 1, -dy]]), (width, height))
+            # Ignore only the thin border exposed by this bounded alignment.
+            margin_x = math.ceil(width * self.MAX_SHIFT_FRACTION) + 1
+            margin_y = math.ceil(height * self.MAX_SHIFT_FRACTION) + 1
+            gray = gray[margin_y:-margin_y, margin_x:-margin_x]
+            reference = reference[margin_y:-margin_y, margin_x:-margin_x]
+        # Low-texture scenes cannot provide a reliable motion estimate. In that
+        # case compare the unaligned image using the same relaxed noise limits.
+        delta = gray - reference
+        difference = np.abs(delta - np.clip(np.median(delta), -6, 6))
+        return (float(difference.mean()) > self.MAX_MEAN_DIFFERENCE
+                or float((difference > self.CHANGED_PIXEL_DIFFERENCE).mean()) > self.MAX_CHANGED_FRACTION)
+
     def observe(self, frame, now):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         gray = cv2.GaussianBlur(cv2.resize(gray, (160, 96)), (5, 5), 0).astype(np.float32)
         restart = self.anchor is None or self.last_time is None or now - self.last_time > 0.75
         if not restart:
-            delta = gray - self.anchor
-            # Ignore small uniform exposure fluctuations, but compare against a
-            # fixed anchor so slow pans do not accumulate unnoticed.
-            difference = np.abs(delta - np.clip(np.median(delta), -6, 6))
-            restart = float(difference.mean()) > 4 or float((difference > 20).mean()) > 0.04
+            restart = self._scene_changed(gray)
         if restart:
             self.anchor = gray
             self.since = now
