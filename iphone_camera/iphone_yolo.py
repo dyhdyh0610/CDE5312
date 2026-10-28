@@ -13,6 +13,7 @@ import time
 
 from mac_cameras import MacCameras, select_iphone
 from frame_coordinates import annotate_frame, coordinate_system, detection_items
+from cup_target import cup_target, prioritize_cups
 
 HERE = Path(__file__).resolve().parent
 PROJECT = HERE.parent
@@ -143,13 +144,25 @@ def load_model(args):
     return model, device
 
 
-def detect_frame(model, device, frame, confidence, annotate):
+def detect_frame(model, device, frame, confidence, annotate, cups_only=True):
     if model is None:
         return annotate_frame(frame, []) if annotate else frame, None
+    options = {}
+    if cups_only:
+        names = model.names
+        entries = names.items() if isinstance(names, dict) else enumerate(names)
+        classes = [index for index, name in entries if name == "cup"]
+        if not classes:
+            raise RuntimeError("当前模型不包含 cup（杯子）类别，请使用支持杯子的模型。")
+        options["classes"] = classes
     with redirect_stdout(sys.stderr):
-        result = model.predict(frame, device=device, conf=confidence, imgsz=640, verbose=False)[0]
+        result = model.predict(frame, device=device, conf=confidence, imgsz=640, verbose=False,
+                               **options)[0]
     height, width = frame.shape[:2]
     detections = detection_items(result, width, height)
+    if cups_only:
+        detections = [item for item in detections if item["class"] == "cup"]
+    detections = prioritize_cups(detections)
     return annotate_frame(frame, detections) if annotate else frame, detections
 
 
@@ -161,7 +174,8 @@ def process_image(args, panel):
         raise RuntimeError(f"无法读取图片：{args.image}")
     height, width = frame.shape[:2]
     model, device = (None, None) if args.preview else load_model(args)
-    _, detections = detect_frame(model, device, frame, args.confidence, False)
+    _, detections = detect_frame(model, device, frame, args.confidence, False,
+                                 cups_only=not args.all_objects)
     rendered = panel.render(frame, detections) if panel is not None else None
     if args.output:
         destination = Path(args.output).expanduser()
@@ -171,7 +185,8 @@ def process_image(args, panel):
     print(json.dumps({"source": "image", "width": width, "height": height,
                       "image_size": {"width": width, "height": height},
                       "coordinate_system": coordinate_system(width, height),
-                      "detections": detections}, ensure_ascii=False), flush=True)
+                      "detections": detections,
+                      "cup_guidance": cup_target(detections, width, height)}, ensure_ascii=False), flush=True)
     if not args.headless:
         cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
         cv2.imshow(WINDOW, rendered)
@@ -191,6 +206,7 @@ def main(argv=None):
     parser.add_argument("--model", default=str(PROJECT / "yolo26n.pt"), help="已有本地模型路径")
     parser.add_argument("--device", choices=["auto", "cpu", "mps"], default="auto")
     parser.add_argument("--confidence", type=float, default=0.35)
+    parser.add_argument("--all-objects", action="store_true", help="恢复显示所有类别；默认只检测杯子")
     parser.add_argument("--headless", action="store_true", help="不显示窗口，每帧输出 JSON")
     parser.add_argument("--frames", type=int, default=0, help="处理指定帧数后退出；0 表示持续运行")
     parser.add_argument("--timeout", type=float, default=12, help="等待新画面的最长秒数")
@@ -242,12 +258,15 @@ def main(argv=None):
         while True:
             sequence, frame = reader.get(sequence)
             height, width = frame.shape[:2]
-            _, detections = detect_frame(model, device, frame, args.confidence, False)
+            _, detections = detect_frame(model, device, frame, args.confidence, False,
+                                         cups_only=not args.all_objects)
+            guidance = cup_target(detections, width, height)
             count += 1
             if args.headless:
                 row = {"frame": count, "source_sequence": sequence, "width": width,
                        "height": height, "image_size": {"width": width, "height": height},
-                       "coordinate_system": coordinate_system(width, height), "detections": detections}
+                       "coordinate_system": coordinate_system(width, height), "detections": detections,
+                       "cup_guidance": guidance}
                 print(json.dumps(row, ensure_ascii=False), flush=True)
             else:
                 now = time.monotonic()

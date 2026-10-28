@@ -19,7 +19,7 @@ from test_iphone_yolo import SimulatedCapture, authorized_system
 
 def result(bounds):
     box = SimpleNamespace(xyxy=np.array([bounds]), cls=np.array(0), conf=np.array(0.9))
-    return SimpleNamespace(boxes=[box], names={0: "person"})
+    return SimpleNamespace(boxes=[box], names={0: "cup"})
 
 
 class GeometryTests(unittest.TestCase):
@@ -90,6 +90,7 @@ class LiveOutputTests(unittest.TestCase):
     def test_moving_detection_updates_coordinates_on_each_frame_without_waiting(self):
         capture = SimulatedCapture(np.zeros((480, 640, 3), np.uint8))
         model = MagicMock()
+        model.names = {0: "cup"}
         model.predict.side_effect = [[result([80, 50, 120, 90])],
                                      [result([300, 220, 340, 260])],
                                      [result([500, 350, 540, 390])]]

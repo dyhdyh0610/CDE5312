@@ -162,7 +162,7 @@ class ModelIntegrationTests(unittest.TestCase):
                 patch.object(iphone_yolo, "MacCameras", return_value=authorized_system()), \
                 patch.object(cv2, "VideoCapture", return_value=capture), \
                 redirect_stdout(output), redirect_stderr(io.StringIO()):
-            self.assertEqual(iphone_yolo.main(["--no-scene", "--headless", "--frames", "2", "--device", "cpu"]), 0)
+            self.assertEqual(iphone_yolo.main(["--all-objects", "--no-scene", "--headless", "--frames", "2", "--device", "cpu"]), 0)
         rows = [json.loads(line) for line in output.getvalue().splitlines()]
         self.assertEqual(len(rows), 2)
         self.assertTrue(all(any(item["class"] == "bus" for item in row["detections"]) for row in rows))
